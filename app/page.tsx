@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import type { User } from "@supabase/supabase-js";
+import AuthForm from "@/components/AuthForm";
 import { supabase } from "@/lib/supabase";
 
 type TransactionType = "expense" | "income";
@@ -13,6 +15,7 @@ type Transaction = {
   description: string;
   type?: TransactionType | null;
   category?: string | null;
+  user_id?: string | null;
 };
 
 const CATEGORY_OPTIONS = {
@@ -47,6 +50,8 @@ const formatAmount = (amount: number) =>
   new Intl.NumberFormat("ko-KR").format(amount);
 
 export default function Home() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [expenses, setExpenses] = useState<Transaction[]>([]);
   const [transactionType, setTransactionType] =
     useState<TransactionType>("expense");
@@ -61,12 +66,42 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
+    const getCurrentUser = async () => {
+      const { data } = await supabase.auth.getUser();
+      setUser(data.user);
+      setIsAuthLoading(false);
+    };
+
+    void getCurrentUser();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setIsAuthLoading(false);
+      if (session?.user) {
+        setIsLoading(true);
+      } else {
+        setExpenses([]);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    let isActive = true;
+
     const loadExpenses = async () => {
       const { data, error } = await supabase
         .from("expenses")
         .select("*")
+        .eq("user_id", user.id)
         .order("created_at", { ascending: false });
 
+      if (!isActive) return;
       if (error) {
         setErrorMessage("지출 내역을 불러오지 못했습니다.");
       } else {
@@ -76,10 +111,16 @@ export default function Home() {
     };
 
     void loadExpenses();
-  }, []);
+
+    return () => {
+      isActive = false;
+    };
+  }, [user]);
 
   const saveExpense = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!user) return;
+
     setIsSaving(true);
     setErrorMessage("");
 
@@ -89,10 +130,15 @@ export default function Home() {
       description: description.trim(),
       type: transactionType,
       category,
+      user_id: user.id,
     };
 
     const query = editingId
-      ? supabase.from("expenses").update(values).eq("id", editingId)
+      ? supabase
+          .from("expenses")
+          .update(values)
+          .eq("id", editingId)
+          .eq("user_id", user.id)
       : supabase.from("expenses").insert(values);
     const { data, error } = await query.select().single();
 
@@ -147,6 +193,8 @@ export default function Home() {
   };
 
   const deleteExpense = async (expense: Transaction) => {
+    if (!user) return;
+
     const confirmed = window.confirm(
       `"${expense.description}" 내역을 삭제할까요?`,
     );
@@ -157,7 +205,8 @@ export default function Home() {
     const { error } = await supabase
       .from("expenses")
       .delete()
-      .eq("id", expense.id);
+      .eq("id", expense.id)
+      .eq("user_id", user.id);
 
     if (error) {
       setErrorMessage("삭제하지 못했습니다. 잠시 후 다시 시도해 주세요.");
@@ -170,19 +219,48 @@ export default function Home() {
     setDeletingId(null);
   };
 
+  const logout = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) setErrorMessage("로그아웃하지 못했습니다. 다시 시도해 주세요.");
+  };
+
+  if (isAuthLoading) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#f7f7f5]">
+        <p className="text-sm text-[#86868b]">로그인 정보를 확인하는 중...</p>
+      </main>
+    );
+  }
+
+  if (!user) return <AuthForm />;
+
   return (
     <div className="min-h-screen bg-[#f7f7f5] text-[#1d1d1f]">
       <header>
-        <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-5 py-7 sm:px-8 sm:py-9">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-[#2563eb] text-white">
-            <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M4 7.5h16M7 4v3.5M17 4v3.5M5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-12A1.5 1.5 0 0 0 18.5 5h-13A1.5 1.5 0 0 0 4 6.5v12A1.5 1.5 0 0 0 5.5 20Z" />
-              <path d="M8 12h3v3H8z" />
-            </svg>
+        <div className="mx-auto flex w-full max-w-3xl flex-col items-stretch justify-between gap-4 px-5 py-7 sm:flex-row sm:items-center sm:px-8 sm:py-9">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#2563eb] text-white">
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M4 7.5h16M7 4v3.5M17 4v3.5M5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-12A1.5 1.5 0 0 0 18.5 5h-13A1.5 1.5 0 0 0 4 6.5v12A1.5 1.5 0 0 0 5.5 20Z" />
+                <path d="M8 12h3v3H8z" />
+              </svg>
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-medium tracking-[0.14em] text-[#86868b]">SMART MONEY NOTE</p>
+              <h1 className="truncate text-lg font-semibold tracking-[-0.02em] sm:mt-0.5 sm:text-xl">기현이가 만든 AI 가계부</h1>
+            </div>
           </div>
-          <div>
-            <p className="text-xs font-medium tracking-[0.14em] text-[#86868b]">SMART MONEY NOTE</p>
-            <h1 className="mt-0.5 text-xl font-semibold tracking-[-0.02em]">기현이가 만든 AI 가계부</h1>
+          <div className="flex shrink-0 items-center justify-between gap-2 sm:justify-start">
+            <p className="max-w-56 truncate text-sm text-[#6e6e73] sm:max-w-40">
+              {user.email}
+            </p>
+            <button
+              type="button"
+              onClick={() => void logout()}
+              className="min-h-11 rounded-xl bg-white px-4 text-sm font-medium transition-colors hover:bg-[#eeeeec]"
+            >
+              로그아웃
+            </button>
           </div>
         </div>
       </header>

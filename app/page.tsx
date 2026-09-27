@@ -1,62 +1,47 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import AuthForm from "@/components/AuthForm";
+import CalendarView from "@/components/CalendarView";
+import ChatPanel, { ChatMessage } from "@/components/ChatPanel";
+import EntryDrawer from "@/components/EntryDrawer";
+import MonthNavigator from "@/components/MonthNavigator";
+import SearchBar from "@/components/SearchBar";
+import SummaryCard from "@/components/SummaryCard";
+import TransactionForm from "@/components/TransactionForm";
+import TransactionItem from "@/components/TransactionItem";
+import { AssistantTransaction } from "@/lib/assistant";
 import { supabase } from "@/lib/supabase";
+import { useClientToday } from "@/lib/useClientToday";
+import {
+  CATEGORY_OPTIONS,
+  categoriesForType,
+  inMonth,
+  LedgerView,
+  matchesFilters,
+  monthFromDate,
+  summarize,
+  Transaction,
+  TransactionType,
+  TypeFilter,
+} from "@/lib/transactions";
 
-type TransactionType = "expense" | "income";
-
-type Transaction = {
-  id: number;
-  created_at: string;
-  date: string;
-  amount: number;
-  description: string;
-  type?: TransactionType | null;
-  category?: string | null;
-  user_id?: string | null;
+const welcomeMessage: ChatMessage = {
+  id: "welcome",
+  role: "assistant",
+  content: "안녕하세요. 지출이나 수입을 말해 주세요. 예를 들어 “오늘 점심 8500원”이라고 적으면 가계부에 남길게요.",
 };
 
-const CATEGORY_OPTIONS = {
-  expense: [
-    { value: "식비", emoji: "🍽️" },
-    { value: "교통비", emoji: "🚌" },
-    { value: "쇼핑", emoji: "🛍️" },
-    { value: "문화/여가", emoji: "🎬" },
-    { value: "주거/통신", emoji: "🏠" },
-    { value: "기타", emoji: "📌" },
-  ],
-  income: [
-    { value: "급여", emoji: "💼" },
-    { value: "용돈", emoji: "🎁" },
-    { value: "금융소득", emoji: "📈" },
-    { value: "기타", emoji: "📌" },
-  ],
-} satisfies Record<TransactionType, { value: string; emoji: string }[]>;
-
-const ALL_CATEGORIES = [
-  ...CATEGORY_OPTIONS.expense,
-  ...CATEGORY_OPTIONS.income,
-];
-
-const getCategoryInfo = (category?: string | null) =>
-  ALL_CATEGORIES.find((item) => item.value === category) ?? {
-    value: "미분류",
-    emoji: "🏷️",
-  };
-
-const formatAmount = (amount: number) =>
-  new Intl.NumberFormat("ko-KR").format(amount);
-
 export default function Home() {
+  const today = useClientToday();
+  const todayParts = monthFromDate(today) ?? { year: 1970, month: 1 };
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [expenses, setExpenses] = useState<Transaction[]>([]);
-  const [transactionType, setTransactionType] =
-    useState<TransactionType>("expense");
+  const [transactionType, setTransactionType] = useState<TransactionType>("expense");
   const [category, setCategory] = useState("식비");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -64,35 +49,70 @@ export default function Home() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [view, setView] = useState<LedgerView>("list");
+  const [period, setPeriod] = useState<{ year: number; month: number } | null>(null);
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([welcomeMessage]);
+  const [draft, setDraft] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const year = period?.year ?? todayParts.year;
+  const month = period?.month ?? todayParts.month;
+  const formDate = date ?? today;
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
 
   useEffect(() => {
-    const getCurrentUser = async () => {
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
+  const closeChat = useCallback(() => setChatOpen(false), []);
+  const openChat = useCallback(() => {
+    setMenuOpen(false);
+    setChatOpen(true);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadUser = async () => {
       const { data } = await supabase.auth.getUser();
+      if (!active) return;
       setUser(data.user);
       setIsAuthLoading(false);
     };
 
-    void getCurrentUser();
+    void loadUser();
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
       setIsAuthLoading(false);
-      if (session?.user) {
-        setIsLoading(true);
-      } else {
+      if (!nextUser) {
         setExpenses([]);
+        setIsLoading(false);
+      } else {
+        setIsLoading(true);
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
     if (!user) return;
-
-    let isActive = true;
+    let active = true;
 
     const loadExpenses = async () => {
       const { data, error } = await supabase
@@ -101,7 +121,7 @@ export default function Home() {
         .eq("user_id", user.id)
         .order("created_at", { ascending: false });
 
-      if (!isActive) return;
+      if (!active) return;
       if (error) {
         setErrorMessage("지출 내역을 불러오지 못했습니다.");
       } else {
@@ -111,21 +131,47 @@ export default function Home() {
     };
 
     void loadExpenses();
-
     return () => {
-      isActive = false;
+      active = false;
     };
   }, [user]);
+
+  const monthTransactions = expenses.filter((expense) => inMonth(expense, year, month));
+  const summary = summarize(monthTransactions);
+  const visibleTransactions = monthTransactions.filter((expense) =>
+    matchesFilters(expense, {
+      query,
+      type: typeFilter,
+      category: categoryFilter,
+    }),
+  );
+
+  const changeTypeFilter = (next: TypeFilter) => {
+    setTypeFilter(next);
+    const allowed = categoriesForType(next).map((item) => item.value);
+    if (categoryFilter !== "all" && !allowed.includes(categoryFilter)) {
+      setCategoryFilter("all");
+    }
+  };
+
+  const resetForm = () => {
+    setEditingId(null);
+    setTransactionType("expense");
+    setCategory("식비");
+    setDate(null);
+    setAmount("");
+    setDescription("");
+    setErrorMessage("");
+  };
 
   const saveExpense = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!user) return;
-
     setIsSaving(true);
     setErrorMessage("");
 
     const values = {
-      date,
+      date: formDate,
       amount: Number(amount),
       description: description.trim(),
       type: transactionType,
@@ -133,14 +179,10 @@ export default function Home() {
       user_id: user.id,
     };
 
-    const query = editingId
-      ? supabase
-          .from("expenses")
-          .update(values)
-          .eq("id", editingId)
-          .eq("user_id", user.id)
+    const queryBuilder = editingId
+      ? supabase.from("expenses").update(values).eq("id", editingId).eq("user_id", user.id)
       : supabase.from("expenses").insert(values);
-    const { data, error } = await query.select().single();
+    const { data, error } = await queryBuilder.select().single();
 
     if (error) {
       setErrorMessage(
@@ -152,11 +194,10 @@ export default function Home() {
       setExpenses((current) =>
         editingId
           ? current.map((expense) => (expense.id === data.id ? data : expense))
-          : [
-              data,
-              ...current.filter((expense) => expense.id !== data.id),
-            ],
+          : [data, ...current.filter((expense) => expense.id !== data.id)],
       );
+      const savedMonth = monthFromDate(data.date);
+      if (savedMonth) setPeriod(savedMonth);
       setEditingId(null);
       setTransactionType("expense");
       setCategory("식비");
@@ -176,28 +217,14 @@ export default function Home() {
     setAmount(String(expense.amount));
     setDescription(expense.description);
     setErrorMessage("");
-    document.getElementById("expense-form")?.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-    });
-  };
-
-  const cancelEditing = () => {
-    setEditingId(null);
-    setTransactionType("expense");
-    setCategory("식비");
-    setDate(new Date().toISOString().slice(0, 10));
-    setAmount("");
-    setDescription("");
-    setErrorMessage("");
+    setMenuOpen(false);
+    setChatOpen(false);
+    document.getElementById("expense-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const deleteExpense = async (expense: Transaction) => {
     if (!user) return;
-
-    const confirmed = window.confirm(
-      `"${expense.description}" 내역을 삭제할까요?`,
-    );
+    const confirmed = window.confirm(`"${expense.description}" 내역을 삭제할까요?`);
     if (!confirmed) return;
 
     setDeletingId(expense.id);
@@ -211,12 +238,88 @@ export default function Home() {
     if (error) {
       setErrorMessage("삭제하지 못했습니다. 잠시 후 다시 시도해 주세요.");
     } else {
-      setExpenses((current) =>
-        current.filter((item) => item.id !== expense.id),
-      );
-      if (editingId === expense.id) cancelEditing();
+      setExpenses((current) => current.filter((item) => item.id !== expense.id));
+      if (editingId === expense.id) resetForm();
     }
     setDeletingId(null);
+  };
+
+  const saveFromAssistant = async (transactions: AssistantTransaction[]) => {
+    if (!user) return;
+    const rows = transactions.map((item) => ({ ...item, user_id: user.id }));
+    const { data, error } = await supabase.from("expenses").insert(rows).select();
+    if (error || !data) throw new Error("save");
+    setExpenses((current) =>
+      [...data, ...current].sort((left, right) => right.created_at.localeCompare(left.created_at)),
+    );
+  };
+
+  const sendChat = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const content = draft.trim();
+    if (!content || isSending || !user) return;
+
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+    };
+    const nextMessages = [...messages, userMessage];
+    setMessages(nextMessages);
+    setDraft("");
+    setIsSending(true);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sessionData.session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({
+          messages: nextMessages.map(({ role, content: text }) => ({ role, content: text })),
+          expenses: expenses.slice(0, 60).map((item) => ({
+            date: item.date,
+            amount: item.amount,
+            description: item.description,
+            type: item.type ?? "expense",
+            category: item.category,
+          })),
+          today,
+        }),
+      });
+      const payload = (await response.json()) as {
+        message?: string;
+        transactions?: AssistantTransaction[];
+        error?: string;
+      };
+      if (!response.ok) throw new Error(payload.error || "응답을 받지 못했습니다.");
+
+      let reply = payload.message?.trim() || "알겠습니다.";
+      if (payload.transactions?.length) {
+        try {
+          await saveFromAssistant(payload.transactions);
+        } catch {
+          reply = "내용은 이해했지만 가계부에 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+        }
+      }
+      setMessages((current) => [
+        ...current,
+        { id: crypto.randomUUID(), role: "assistant", content: reply },
+      ]);
+    } catch {
+      setMessages((current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: "지금은 답변을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        },
+      ]);
+    } finally {
+      setIsSending(false);
+    }
   };
 
   const logout = async () => {
@@ -236,207 +339,170 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-[#f7f7f5] text-[#1d1d1f]">
-      <header>
-        <div className="mx-auto flex w-full max-w-3xl flex-col items-stretch justify-between gap-4 px-5 py-7 sm:flex-row sm:items-center sm:px-8 sm:py-9">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#2563eb] text-white">
-              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <path d="M4 7.5h16M7 4v3.5M17 4v3.5M5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-12A1.5 1.5 0 0 0 18.5 5h-13A1.5 1.5 0 0 0 4 6.5v12A1.5 1.5 0 0 0 5.5 20Z" />
-                <path d="M8 12h3v3H8z" />
-              </svg>
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs font-medium tracking-[0.14em] text-[#86868b]">SMART MONEY NOTE</p>
-              <h1 className="truncate text-lg font-semibold tracking-[-0.02em] sm:mt-0.5 sm:text-xl">기현이가 만든 AI 가계부</h1>
-            </div>
+      <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6 sm:py-12">
+        <header className="mb-8 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="truncate text-2xl font-semibold tracking-[-0.03em]">기현이가 만든 AI 가계부</h1>
+            <p className="mt-1 truncate text-sm text-[#86868b]">{user.email}</p>
           </div>
-          <div className="flex shrink-0 items-center justify-between gap-2 sm:justify-start">
-            <p className="max-w-56 truncate text-sm text-[#6e6e73] sm:max-w-40">
-              {user.email}
-            </p>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <div className="relative z-30">
+              <button
+                type="button"
+                aria-label="메뉴"
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
+                onClick={() => setMenuOpen((open) => !open)}
+                className="flex h-11 w-11 flex-col items-center justify-center gap-[5px] rounded-full bg-white"
+              >
+                <span className="block h-[2px] w-[18px] rounded-full bg-[#1d1d1f]" />
+                <span className="block h-[2px] w-[18px] rounded-full bg-[#1d1d1f]" />
+                <span className="block h-[2px] w-[18px] rounded-full bg-[#1d1d1f]" />
+              </button>
+              {menuOpen && (
+                <div
+                  role="menu"
+                  aria-label="카테고리"
+                  className="absolute right-0 top-[calc(100%+8px)] w-64 rounded-2xl bg-white p-2 shadow-[0_12px_40px_rgba(0,0,0,0.12)]"
+                >
+                  <p className="px-3 pb-1 pt-2 text-xs font-medium text-[#8e8e93]">카테고리</p>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={openChat}
+                    className="flex w-full flex-col rounded-xl px-3 py-3 text-left hover:bg-[#f3f3f1]"
+                  >
+                    <span className="text-sm font-semibold">AI 대화</span>
+                    <span className="mt-0.5 text-xs text-[#8e8e93]">말로 지출과 수입을 기록해요</span>
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               type="button"
               onClick={() => void logout()}
-              className="min-h-11 rounded-xl bg-white px-4 text-sm font-medium transition-colors hover:bg-[#eeeeec]"
+              className="min-h-11 rounded-full bg-white px-4 text-sm font-medium"
             >
               로그아웃
             </button>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <main className="mx-auto flex w-full max-w-3xl flex-col px-5 pb-24 pt-10 sm:px-8 sm:pb-32 sm:pt-16">
-        <div className="mb-12 sm:mb-16">
-          <p className="text-sm font-medium text-[#2563eb]">오늘의 자금 기록</p>
-          <h2 className="mt-4 max-w-xl text-4xl font-semibold leading-[1.15] tracking-[-0.045em] sm:text-5xl">
-            수입과 지출을<br className="sm:hidden" /> 기록해 보세요.
-          </h2>
-          <p className="mt-5 text-base leading-7 text-[#6e6e73] sm:text-lg">작은 기록이 더 나은 금융 습관을 만듭니다.</p>
-        </div>
+        <TransactionForm
+          editingId={editingId}
+          transactionType={transactionType}
+          category={category}
+          date={formDate}
+          amount={amount}
+          description={description}
+          isSaving={isSaving}
+          errorMessage={errorMessage}
+          onTypeChange={(value) => {
+            setTransactionType(value);
+            setCategory(CATEGORY_OPTIONS[value][0].value);
+          }}
+          onCategoryChange={setCategory}
+          onDateChange={setDate}
+          onAmountChange={setAmount}
+          onDescriptionChange={setDescription}
+          onSubmit={(event) => void saveExpense(event)}
+          onCancel={resetForm}
+        />
 
-        <section id="expense-form" className="w-full rounded-3xl bg-white p-6 sm:p-10">
-          <form onSubmit={saveExpense} className="space-y-8">
-            {editingId && (
-              <div className="flex items-center justify-between rounded-2xl bg-[#eff4ff] px-4 py-3">
-                <p className="text-sm font-medium text-[#2563eb]">내역을 수정하고 있어요</p>
-                <button type="button" onClick={cancelEditing} className="min-h-10 rounded-xl px-3 text-sm font-medium text-[#6e6e73] transition-colors hover:bg-white">
-                  취소
-                </button>
-              </div>
-            )}
-            <fieldset>
-              <legend className="mb-3 block text-base font-semibold">구분</legend>
-              <div className="grid grid-cols-2 gap-2 rounded-2xl bg-[#f3f3f1] p-1.5">
-                {([
-                  ["expense", "지출"],
-                  ["income", "수입"],
-                ] as const).map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    aria-pressed={transactionType === value}
-                    onClick={() => {
-                      setTransactionType(value);
-                      setCategory(CATEGORY_OPTIONS[value][0].value);
-                    }}
-                    className={`min-h-12 rounded-xl text-base font-medium transition-colors ${
-                      transactionType === value
-                        ? "bg-white text-[#2563eb]"
-                        : "text-[#6e6e73] hover:text-[#1d1d1f]"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </fieldset>
-
-            <div>
-              <label htmlFor="category" className="mb-3 block text-base font-semibold">카테고리</label>
-              <select
-                id="category"
-                value={category}
-                onChange={(event) => setCategory(event.target.value)}
-                required
-                className="field cursor-pointer appearance-none"
+        <section className="mt-10">
+          <h2 className="mb-4 text-base font-semibold">월별 내역</h2>
+          <MonthNavigator
+            year={year}
+            month={month}
+            onChange={(nextYear, nextMonth) => setPeriod({ year: nextYear, month: nextMonth })}
+          />
+          <div className="mt-4">
+            <SummaryCard income={summary.income} expense={summary.expense} net={summary.net} />
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl bg-[#f3f3f1] p-1.5">
+            {([
+              ["list", "목록 보기"],
+              ["calendar", "캘린더 보기"],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={view === value}
+                onClick={() => setView(value)}
+                className={`min-h-11 rounded-xl text-sm font-medium ${
+                  view === value ? "bg-white text-[#2563eb]" : "text-[#6e6e73]"
+                }`}
               >
-                {CATEGORY_OPTIONS[transactionType].map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.emoji} {option.value}
-                  </option>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-4">
+            <SearchBar
+              query={query}
+              typeFilter={typeFilter}
+              categoryFilter={categoryFilter}
+              onQueryChange={setQuery}
+              onTypeFilterChange={changeTypeFilter}
+              onCategoryFilterChange={setCategoryFilter}
+            />
+          </div>
+          <div className="mt-4">
+            {isLoading ? (
+              <p className="rounded-2xl bg-white px-4 py-8 text-center text-sm text-[#86868b]">
+                내역을 불러오는 중...
+              </p>
+            ) : view === "calendar" ? (
+              <CalendarView
+                key={`${year}-${month}`}
+                year={year}
+                month={month}
+                transactions={visibleTransactions}
+                deletingId={deletingId}
+                onEdit={startEditing}
+                onDelete={(expense) => void deleteExpense(expense)}
+              />
+            ) : visibleTransactions.length > 0 ? (
+              <div className="space-y-3">
+                {visibleTransactions.map((expense) => (
+                  <TransactionItem
+                    key={expense.id}
+                    transaction={expense}
+                    deletingId={deletingId}
+                    onEdit={startEditing}
+                    onDelete={(item) => void deleteExpense(item)}
+                  />
                 ))}
-              </select>
-            </div>
-
-            <div>
-              <label htmlFor="date" className="mb-3 block text-base font-semibold">날짜</label>
-              <input id="date" type="date" value={date} onChange={(event) => setDate(event.target.value)} required className="field" />
-            </div>
-
-            <div>
-              <label htmlFor="amount" className="mb-3 block text-base font-semibold">금액</label>
-              <div className="relative">
-                <input
-                  id="amount"
-                  type="text"
-                  inputMode="numeric"
-                  value={amount ? formatAmount(Number(amount)) : ""}
-                  onChange={(event) => setAmount(event.target.value.replace(/\D/g, ""))}
-                  placeholder="0"
-                  required
-                  className="field pr-14 font-mono text-lg font-semibold tabular-nums"
-                />
-                <span className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 text-sm font-medium text-[#86868b]">원</span>
               </div>
-            </div>
-
-            <div>
-              <label htmlFor="description" className="mb-3 block text-base font-semibold">내용</label>
-              <input id="description" type="text" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="어디에 사용했나요?" required className="field" />
-            </div>
-
-            {errorMessage && (
-              <p role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
-                {errorMessage}
+            ) : (
+              <p className="rounded-2xl bg-white px-4 py-8 text-center text-sm text-[#86868b]">
+                {monthTransactions.length > 0
+                  ? "조건에 맞는 내역이 없습니다."
+                  : "이 달에는 저장된 내역이 없습니다."}
               </p>
             )}
-
-            <button disabled={isSaving} type="submit" className="flex h-16 w-full touch-manipulation items-center justify-center gap-2 rounded-2xl bg-[#2563eb] text-base font-semibold text-white transition-colors hover:bg-[#1d4ed8] active:bg-[#1e40af] disabled:cursor-not-allowed disabled:opacity-50">
-              {isSaving ? "저장 중..." : editingId ? "수정 내용 저장하기" : "저장하기"}
-              <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="m9 18 6-6-6-6" />
-              </svg>
-            </button>
-          </form>
+          </div>
         </section>
+      </div>
 
-        <section className="mt-16 w-full sm:mt-20">
-          {isLoading ? (
-            <p className="py-8 text-center text-sm text-[#86868b]">지출 내역을 불러오는 중...</p>
-          ) : expenses.length > 0 ? (
-            <>
-            <div className="mb-7 flex items-end justify-between">
-              <h3 className="text-xl font-semibold tracking-[-0.02em]">최근 내역</h3>
-              <div className="text-right">
-                <p className="text-xs text-[#86868b]">현재 잔액</p>
-                <p className="mt-1 font-mono text-xl font-semibold tabular-nums tracking-[-0.04em]">
-                  {formatAmount(expenses.reduce(
-                    (sum, item) =>
-                      sum + (item.type === "income" ? item.amount : -item.amount),
-                    0,
-                  ))}<span className="ml-1 font-sans text-sm">원</span>
-                </p>
-              </div>
-            </div>
-            <div className="space-y-4">
-              {expenses.map((expense) => {
-                const categoryInfo = getCategoryInfo(expense.category);
-                const isIncome = expense.type === "income";
+      {menuOpen && (
+        <button type="button" aria-label="메뉴 닫기" className="fixed inset-0 z-20" onClick={closeMenu} />
+      )}
 
-                return (
-                  <article key={expense.id} className="w-full rounded-2xl bg-white px-5 py-6 sm:px-7">
-                  <div className="flex items-center justify-between gap-5">
-                    <div>
-                      <p className="text-base font-medium">{expense.description}</p>
-                      <p className="mt-2 text-sm text-[#86868b]">{expense.date}</p>
-                      <span className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-[#f3f3f1] px-2.5 py-1 text-xs font-medium text-[#6e6e73]">
-                        <span aria-hidden="true">{categoryInfo.emoji}</span>
-                        {categoryInfo.value}
-                      </span>
-                    </div>
-                    <p className={`shrink-0 font-mono text-xl font-semibold tabular-nums tracking-[-0.04em] sm:text-2xl ${isIncome ? "text-[#2563eb]" : ""}`}>
-                      {isIncome ? "+" : "-"}{formatAmount(expense.amount)}<span className="ml-1 font-sans text-sm font-medium">원</span>
-                    </p>
-                  </div>
-                  <div className="mt-5 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => startEditing(expense)}
-                      className="min-h-11 flex-1 rounded-xl bg-[#f3f3f1] px-4 text-sm font-medium transition-colors hover:bg-[#e8e8e5]"
-                    >
-                      수정
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void deleteExpense(expense)}
-                      disabled={deletingId === expense.id}
-                      className="min-h-11 flex-1 rounded-xl bg-[#f3f3f1] px-4 text-sm font-medium transition-colors hover:bg-[#e8e8e5] disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {deletingId === expense.id ? "삭제 중..." : "삭제"}
-                    </button>
-                  </div>
-                </article>
-                );
-              })}
-            </div>
-            </>
-          ) : (
-            <p className="rounded-2xl bg-white px-5 py-10 text-center text-sm text-[#86868b]">
-              아직 저장된 내역이 없습니다.
-            </p>
-          )}
-        </section>
-      </main>
+      <EntryDrawer open={chatOpen} onClose={closeChat} title="AI 대화">
+        {errorMessage && (
+          <p role="alert" className="mx-3 mb-2 shrink-0 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 sm:mx-4">
+            {errorMessage}
+          </p>
+        )}
+        <ChatPanel
+          messages={messages}
+          draft={draft}
+          isSending={isSending}
+          onDraftChange={setDraft}
+          onSubmit={(event) => void sendChat(event)}
+        />
+      </EntryDrawer>
     </div>
   );
 }

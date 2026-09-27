@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">기현이 AI 가계부</string>
+    <string name="title_activity_main">기현이 AI 가계부</string>
+    <string name="package_name">com.gihyeon.aibudget</string>
+    <string name="custom_url_scheme">com.gihyeon.aibudget</string>
+</resources>

@@ -22,7 +22,11 @@ export default function AuthForm() {
     const result =
       mode === "login"
         ? await supabase.auth.signInWithPassword({ email, password })
-        : await supabase.auth.signUp({ email, password });
+        : await supabase.auth.signUp({
+            email,
+            password,
+            options: { emailRedirectTo: window.location.origin },
+          });
 
     if (result.error) {
       setErrorMessage(
@@ -37,8 +41,8 @@ export default function AuthForm() {
     setIsSubmitting(false);
   };
 
-  const changeMode = (nextMode: AuthMode) => {
-    setMode(nextMode);
+  const switchMode = (next: AuthMode) => {
+    setMode(next);
     setMessage("");
     setErrorMessage("");
   };
@@ -53,45 +57,32 @@ export default function AuthForm() {
               <path d="M8 12h3v3H8z" />
             </svg>
           </div>
-          <h1 className="mt-5 text-3xl font-semibold tracking-[-0.04em]">
-            기현이가 만든 AI 가계부
-          </h1>
-          <p className="mt-3 text-base text-[#6e6e73]">
-            나만의 수입과 지출을 안전하게 기록하세요.
-          </p>
+          <h1 className="mt-5 text-3xl font-semibold tracking-[-0.04em]">기현이가 만든 AI 가계부</h1>
+          <p className="mt-3 text-base text-[#6e6e73]">나만의 수입과 지출을 안전하게 기록하세요.</p>
         </div>
 
         <section className="rounded-3xl bg-white p-6 sm:p-8">
           <div className="mb-8 grid grid-cols-2 gap-2 rounded-2xl bg-[#f3f3f1] p-1.5">
-            <button
-              type="button"
-              onClick={() => changeMode("login")}
-              className={`min-h-12 rounded-xl text-sm font-medium transition-colors ${
-                mode === "login"
-                  ? "bg-white text-[#2563eb]"
-                  : "text-[#6e6e73]"
-              }`}
-            >
-              로그인
-            </button>
-            <button
-              type="button"
-              onClick={() => changeMode("signup")}
-              className={`min-h-12 rounded-xl text-sm font-medium transition-colors ${
-                mode === "signup"
-                  ? "bg-white text-[#2563eb]"
-                  : "text-[#6e6e73]"
-              }`}
-            >
-              회원가입
-            </button>
+            {([
+              ["login", "로그인"],
+              ["signup", "회원가입"],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => switchMode(value)}
+                className={`min-h-12 rounded-xl text-sm font-medium transition-colors ${
+                  mode === value ? "bg-white text-[#2563eb]" : "text-[#6e6e73]"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
-              <label htmlFor="email" className="mb-3 block text-base font-semibold">
-                이메일
-              </label>
+              <label htmlFor="email" className="mb-3 block text-base font-semibold">이메일</label>
               <input
                 id="email"
                 type="email"
@@ -103,11 +94,8 @@ export default function AuthForm() {
                 className="field"
               />
             </div>
-
             <div>
-              <label htmlFor="password" className="mb-3 block text-base font-semibold">
-                비밀번호
-              </label>
+              <label htmlFor="password" className="mb-3 block text-base font-semibold">비밀번호</label>
               <input
                 id="password"
                 type="password"
@@ -120,28 +108,20 @@ export default function AuthForm() {
                 className="field"
               />
             </div>
-
             {errorMessage && (
               <p role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
                 {errorMessage}
               </p>
             )}
             {message && (
-              <p className="rounded-xl bg-[#eff4ff] px-4 py-3 text-sm text-[#2563eb]">
-                {message}
-              </p>
+              <p className="rounded-xl bg-[#eff4ff] px-4 py-3 text-sm text-[#2563eb]">{message}</p>
             )}
-
             <button
               type="submit"
               disabled={isSubmitting}
               className="flex h-16 w-full items-center justify-center rounded-2xl bg-[#2563eb] text-base font-semibold text-white transition-colors hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {isSubmitting
-                ? "처리 중..."
-                : mode === "login"
-                  ? "로그인"
-                  : "회원가입"}
+              {isSubmitting ? "처리 중..." : mode === "login" ? "로그인" : "회원가입"}
             </button>
           </form>
         </section>

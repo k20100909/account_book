@@ -308,13 +308,17 @@ export default function Home() {
         ...current,
         { id: crypto.randomUUID(), role: "assistant", content: reply },
       ]);
-    } catch {
+    } catch (error) {
+      const content =
+        error instanceof Error && error.message
+          ? error.message
+          : "지금은 답변을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.";
       setMessages((current) => [
         ...current,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "지금은 답변을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.",
+          content,
         },
       ]);
     } finally {

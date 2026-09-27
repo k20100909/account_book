@@ -17,8 +17,17 @@ type IncomingExpense = {
   category?: string | null;
 };
 
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
 const seoulToday = () =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date());
+
+const readServerEnv = (name: string) => {
+  const value = process.env[name];
+  if (typeof value !== "string") return "";
+  return value.trim().replace(/^['"]|['"]$/g, "").replace(/^GEMINI_API_KEY=/i, "");
+};
 
 const systemInstruction = (today: string) => `당신은 가계부 도우미입니다. 한국어로 짧고 다정하게 답합니다.
 오늘 날짜는 ${today}입니다.
@@ -42,7 +51,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "로그인이 필요합니다." }, { status: 401 });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY || process.env.Gemini_API_KEY;
+  const apiKey = readServerEnv("GEMINI_API_KEY") || readServerEnv("Gemini_API_KEY");
   if (!apiKey) {
     return NextResponse.json({ error: "제미나이 API 키가 없습니다." }, { status: 500 });
   }
@@ -110,10 +119,13 @@ export async function POST(request: Request) {
     const reply = parseAssistantReply(result.response.text());
     return NextResponse.json(reply);
   } catch (cause) {
-    console.error("Gemini request failed", cause instanceof Error ? cause.name : "Error");
-    return NextResponse.json(
-      { error: "지금은 답변을 만들지 못했습니다. 잠시 후 다시 시도해 주세요." },
-      { status: 502 },
-    );
+    const detail = cause instanceof Error ? cause.message : "";
+    console.error("Gemini request failed", detail.slice(0, 300));
+    const error = /API key not valid|API_KEY_INVALID/i.test(detail)
+      ? "Vercel의 Gemini API 키가 거부되었습니다. .env.local의 키만 다시 넣어 주세요."
+      : /quota|RESOURCE_EXHAUSTED|\b429\b/i.test(detail)
+        ? "Gemini 사용 한도에 걸렸습니다. 잠시 후 다시 시도해 주세요."
+        : "지금은 답변을 만들지 못했습니다. 잠시 후 다시 시도해 주세요.";
+    return NextResponse.json({ error }, { status: 502 });
   }
 }
